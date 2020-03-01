@@ -1,158 +1,134 @@
-import requests, os, json
+import requests, os
 from getpass import getpass
 from git import Repo, InvalidGitRepositoryError
 
-def initilize_api_session(username, password, fortigate_ip):
-    """Connects to the Fortigate Firewall via API, authenticates and returns a HTTPS session for additional API calls
+class fortigate_backup:
+    def __init__(self, fortigate_ip, username, password, https_port='443'):
+        self.username = username
+        self.password = password
+        self.fortigate_ip = fortigate_ip
+        self.https_port = https_port
 
-    Params:
-    username(str): Username to authenticate with the Fortigate firewall
-    password(str): Password to authenticate with the Fortigate firewall
-    fortigate_ip(str): IP address of the Fortigate firewall
+        self.parent_backup_location = os.path.join(os.getcwd(), 'backups')
+        self.config_file_backup_location = None
+        self.config_file_backup_filename = f'{self.fortigate_ip}-config_backup.conf'
+        self.backup_folder_exists = None
+        self.api_session = None
+        self.fortigate_config = None
+        self.git_repo = None
+        self.config_changed = None
 
-    Returns:
-    api_session(class): HTTPS API session"""
+    @property
+    def _initialize_api_session(self):
+        """Connects to the Fortigate Firewall via API, authenticates and sets an object attribute of
+        an HTTPS session for additional API calls"""
 
-    api_session = requests.session()
-    login_url = ('https://{0}/logincheck'.format(fortigate_ip))
-    login_payload = {'username': username, 'secretkey': password}
-    api_login = api_session.post(login_url, data=login_payload, verify=False)
-    for cookie in api_login.cookies:
-        if cookie.name == 'ccsrftoken':
-            csrftoken = cookie.value
-            api_session.headers.update({'X-CSRFTOKEN': csrftoken})
-    return api_session
+        api_session = requests.session()
+        login_url = (f'https://{self.fortigate_ip}:{self.https_port}/logincheck')
+        login_payload = {'username': self.username, 'secretkey': self.password}
+        api_login = api_session.post(login_url, data=login_payload, verify=False)
+        for cookie in api_login.cookies:
+            if cookie.name == 'ccsrftoken':
+                csrftoken = cookie.value
+                api_session.headers.update({'X-CSRFTOKEN': csrftoken})
+                self.api_session = api_session
 
-def api_call_get(api_session, fortigate_ip, api_url):
-    """Uses the API HTTPS session from the function initialize_api_session to do a HTTP GET request at an API
-    URL on the Fortigate 
+    @property
+    def _api_download_config(self):
+        """Uses the API HTTPS session from the method '_initialize_api_session' to do an HTTPS GET API request 
+        to the IP address of the Fortigate to download its configuration"""
 
-    Params:
-    api_session(class): Object of the API session from initialize_api_session
-    fortigate_ip(str): IP address of the Fortigate firewall
-    api_url(str): Fortigate API V2 URL to obtain the Fortigate firewall's configuration
+        self.fortigate_config = self.api_session.get(f'https://{self.fortigate_ip}:{self.https_port}/\
+        api/v2/monitor/system/config/backup?scope=global', verify=False).text
 
-    Returns:
-    api_call.text(str): A string output of a dictionary from the API call
-    """
+    @property
+    def _validate_backup_folder_exists(self):
+        """Checks to see if the parent/root backup directory exists, creates it if it is missing,
+        then checks to see if there is a device specific directory (device's ip address) within that"""
 
-    api_call = api_session.get('https://{0}/api/v2/'.format(fortigate_ip) + api_url, verify=False)
-    return api_call.text
-    
-def create_repo_folder_and_or_modify_config_file(fortigate_config):
-    """Will create a new folder with the Fortigate Firewall's IP address if one is not already present
-
-    Params:
-    fortigate_config(str): String of the Fortigate's configuration from the api_call_get function 
-
-    Returns:
-    file_name_with_new_dir(str): Returns a string of the Fortigate Firewall's configuration file and ABSOLUTE directory path
-    """
-    
-    current_dir = os.getcwd()
-    new_directory_name = fortigate_ip
-    file_name_with_new_dir = os.path.join(current_dir, new_directory_name, "{0}-config_backup.conf".format(fortigate_ip))
-    if new_directory_name in os.listdir(current_dir):
-        fortigate_backup_file = open(file_name_with_new_dir, 'w')
-        fortigate_backup_file.write(fortigate_config)
-        return file_name_with_new_dir
-    else:
-        os.mkdir(new_directory_name)
-        fortigate_backup_file = open(file_name_with_new_dir, 'w')
-        fortigate_backup_file.write(fortigate_config)
-        return file_name_with_new_dir
-
-def git_initialize_repo(fortigate_dir):
-    """Takes a directory and will initialize a git repository
-
-    Params:
-    fortigate_dir(str): String of a directory
-
-
-    Returns(class): Git repo object
-    """
-
-    repo = Repo.init(fortigate_dir)
-    return repo
-
-def git_stage_and_commit(repo, conf_filename):
-    """Takes a repo object and a filename and will stage and commit that file
-
-    Params:
-    repo(class): Git repo object
-    conf_filename(str): String of a file/filepath and file to stage and commmit
-
-    Returns:
-    None
-    """
-    repo.index.add([str(conf_filename)])
-    repo.index.commit('Automated Commit')
-
-def confirm_existing_repo_or_initialize(fortigate_dir, conf_filename):
-    """Takes a directory and confirms if it is a git repo, if it isn't, it will create a repo with
-    git_initilize_repo and will then make an initial commit to 1 file specific in conf_filename
-
-    Params:
-    fortigate_dir(str): String of a directory
-    conf_filename(str): Filename to commit
-
-    Returns:
-    repo(class): Git repo object
-    """
-
-    try:
-        repo = Repo(fortigate_dir)
-        return repo
-    except InvalidGitRepositoryError:
-        repo = git_initialize_repo(fortigate_dir)
-        git_stage_and_commit(repo, conf_filename)
-        return repo
+        if os.path.exists(self.parent_backup_location) is False:
+            os.mkdir(self.parent_backup_location)
         
-def git_diff_compare(repo):
-    """Takes the commit where HEAD is currently pointed and compares it to the working directory
-    If there changes it will return a bool == TRUE, otherwise it will return FALSE
+        if self.fortigate_ip in os.listdir(self.parent_backup_location):
+            self.backup_folder_exists = True
+            self.config_file_backup_location = os.path.join(self.parent_backup_location, self.fortigate_ip)
+        else:
+            self.backup_folder_exists = False
 
-    Params:
-    repo(class): Git repo object
+    @property
+    def _create_device_backup_folder(self):
+        """Creates a device specific backup folder in the parent/root backup folder"""
 
-    Returns:
-    bool(bool): Returns a bool of git's diff 
-    """
+        os.mkdir(os.path.join(self.parent_backup_location, self.fortigate_ip))
+        self.config_file_backup_location = os.path.join(self.parent_backup_location, self.fortigate_ip)
 
-    hcommit = repo.head.commit
-    git_diff_bool = hcommit.diff(None)
-    return bool(git_diff_bool)
+    @property
+    def _validate_git_repo_exists(self):
+        """Verifies if a git repository is present in the device specific directory"""
 
-def git_compare(fortigate_ip, conf_filename):
-    """Master function that contains all aforementioned git functions
-    
-    Params:
-    fortigate_ip(str): IP address of the Fortigate firewall
-    conf_filename(str): A string of the Fortigate Firewall configuration file and ABSOLUTE directory
+        try:
+            self.git_repo = Repo(path=self.config_file_backup_location)
+            self.git_repo_exists = True
+        except InvalidGitRepositoryError:
+            self.git_repo_exists = False
 
-    Returns:
-    None
-    """
+    @property
+    def _create_git_repo(self):
+        """Creates a git repository"""
 
-    fortigate_dir = os.path.join(os.getcwd(), fortigate_ip)
-    repo = confirm_existing_repo_or_initialize(fortigate_dir, conf_filename)
-    if git_diff_compare(repo) is True:
-        git_stage_and_commit(repo, conf_filename)
-   
+        if self.git_repo_exists is False:
+            self.git_repo = Repo.init(path=self.config_file_backup_location)
+        else:
+            pass
+
+    @property
+    def _git_diff_compare(self):
+        """Takes the commit where HEAD is currently pointed and compares it to the working directory
+        If there changes it will return a bool == TRUE, otherwise it will return FALSE"""
+
+        hcommit = self.git_repo.head.commit
+        git_diff_bool = hcommit.diff(None)
+        self.config_changed = bool(git_diff_bool)
+
+    @property
+    def _git_stage_and_commit(self):
+        """Stages the config backup file in the device specific directory, then commits it"""
+        
+        self.git_repo.index.add([self.config_file_backup_filename])
+        self.git_repo.index.commit('Automated Commit')
+
+    @property
+    def _write_configuration_file(self):
+        """After the config file is downloaded from the Fortigate, overwrites (or creates one if it is not present)
+        the configuration file in the device specific directory"""
+
+        config_file = open(os.path.join(self.config_file_backup_location, self.config_file_backup_filename), 'w')
+        config_file.write(self.fortigate_config)
+        config_file.close()
+
+    @property
+    def backup(self):
+        """Final method that ties all aforementioned methods together"""
+        self._initialize_api_session
+        self._api_download_config
+        self._validate_backup_folder_exists
+        if self.backup_folder_exists is False:
+            self._create_device_backup_folder
+        self._write_configuration_file
+        self._validate_git_repo_exists
+        if self.git_repo_exists is False:
+            self._create_git_repo
+            self._git_stage_and_commit
+        elif self.git_repo_exists is True:
+            self._git_diff_compare
+            if self.config_changed is True:
+                self._git_stage_and_commit
+            else:
+                pass
+
 if __name__ == "__main__":
     fortigate_ip = input('IP address: ')
     username = input('Username: ')
     password = getpass('Password: ')
-    api_session = initilize_api_session(username, password, fortigate_ip)
-    api_url = 'monitor/system/config/backup?scope=global'
-    config_download = api_call_get(api_session, fortigate_ip, api_url)
-    conf_filename = create_repo_folder_and_or_modify_config_file(config_download)
-    git_compare(fortigate_ip, conf_filename)
-
-
-
-
-
-
-
-
+    backup = fortigate_backup(fortigate_ip, username, password)
+    backup.backup
