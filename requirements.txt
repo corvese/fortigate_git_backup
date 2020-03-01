@@ -1,2 +1,3 @@
 requests==2.20.0
 GitPython==2.1.11
+fastapi==0.44.1
