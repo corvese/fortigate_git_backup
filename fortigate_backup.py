@@ -38,8 +38,8 @@ class fortigate_backup:
         """Uses the API HTTPS session from the method '_initialize_api_session' to do an HTTPS GET API request 
         to the IP address of the Fortigate to download its configuration"""
 
-        self.fortigate_config = self.api_session.get(f'https://{self.fortigate_ip}:{self.https_port}/\
-        api/v2/monitor/system/config/backup?scope=global', verify=False).text
+        self.fortigate_config = self.api_session.get(f'https://{self.fortigate_ip}:{self.https_port}' \
+        '/api/v2/monitor/system/config/backup?scope=global', verify=False).text
 
     @property
     def _validate_backup_folder_exists(self):
